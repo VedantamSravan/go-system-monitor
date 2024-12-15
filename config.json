@@ -1,0 +1,7 @@
+{
+  "smtp_host": "smtp.gmail.com",
+  "smtp_port": "587",
+  "from_email": "your-email@gmail.com",
+  "email_password": "your-email-password",
+  "to_email": "receiver-email@example.com"
+}
