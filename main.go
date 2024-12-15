@@ -3,22 +3,23 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/shirou/gopsutil/v4/cpu"
+	"github.com/shirou/gopsutil/v4/disk"
+	"github.com/shirou/gopsutil/v4/mem"
 	"io/ioutil"
 	"log"
 	"net/smtp"
-	"github.com/shirou/gopsutil/cpu"
-	"github.com/shirou/gopsutil/mem"
-	"github.com/shirou/gopsutil/disk"
-	"github.com/shirou/gopsutil/sensors"
+	"os/exec"
+	"strings"
 )
 
 // SMTPConfig holds the SMTP server configuration
 type SMTPConfig struct {
-	SMTPHost     string `json:"smtp_host"`
-	SMTPPort     string `json:"smtp_port"`
-	FromEmail    string `json:"from_email"`
+	SMTPHost      string `json:"smtp_host"`
+	SMTPPort      string `json:"smtp_port"`
+	FromEmail     string `json:"from_email"`
 	EmailPassword string `json:"email_password"`
-	ToEmail      string `json:"to_email"`
+	ToEmail       string `json:"to_email"`
 }
 
 // Send email function
@@ -55,6 +56,17 @@ func ReadSMTPConfig(filePath string) (SMTPConfig, error) {
 	return config, nil
 }
 
+// GetFanSpeeds returns the fan speeds using the 'sensors' command on Linux
+func GetFanSpeeds() (string, error) {
+	// Run the 'sensors' command (make sure lm-sensors is installed)
+	cmd := exec.Command("sensors")
+	output, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("Error fetching fan speeds: %w", err)
+	}
+	return string(output), nil
+}
+
 func main() {
 	// Read SMTP configuration from config file
 	config, err := ReadSMTPConfig("config.json")
@@ -64,54 +76,50 @@ func main() {
 
 	// Thresholds
 	const (
-		maxTemp            = 90.0   // Max temperature in °C
-		minTemp            = 80.0   // Min temperature in °C
-		minFanSpeed        = 3500   // Min fan speed in RPM
-		maxFanSpeed        = 5000   // Max fan speed in RPM
-		maxClockSpeed      = 3.20   // Max clock speed in GHz
-		cpuUsageThreshold  = 80.0   // Max CPU usage in %
-		memUsageThreshold  = 80.0   // Max memory usage in %
-		diskUsageThreshold = 50.0   // Max disk usage in %
+		maxTemp            = 90.0 // Max temperature in °C
+		minTemp            = 80.0 // Min temperature in °C
+		minFanSpeed        = 3500 // Min fan speed in RPM
+		maxFanSpeed        = 5000 // Max fan speed in RPM
+		maxClockSpeed      = 3.20 // Max clock speed in GHz
+		cpuUsageThreshold  = 80.0 // Max CPU usage in %
+		memUsageThreshold  = 80.0 // Max memory usage in %
+		diskUsageThreshold = 50.0 // Max disk usage in %
 	)
 
 	alertMessage := ""
 
-	// Monitor CPU Temperature
-	temps, err := sensors.CPUTemperature()
+	// Monitor CPU Temperature (using sensors command for Linux)
+	temps, err := GetCPUTemperature()
 	if err != nil {
 		log.Fatalf("Error fetching CPU temperature: %v\n", err)
 	}
-	for _, temp := range temps {
-		if temp.Temperature < minTemp || temp.Temperature > maxTemp {
-			alertMessage += fmt.Sprintf("Alert: CPU Temperature is out of safe range: %.2f°C\n", temp.Temperature)
-		} else {
-			fmt.Printf("CPU Temperature: %.2f°C (Safe)\n", temp.Temperature)
-		}
+	if temps > maxTemp || temps < minTemp {
+		alertMessage += fmt.Sprintf("Alert: CPU Temperature is out of safe range: %.2f°C\n", temps)
+	} else {
+		fmt.Printf("CPU Temperature: %.2f°C (Safe)\n", temps)
 	}
 
-	// Monitor Fan Speeds
-	fans, err := sensors.FanSpeeds()
+	// Monitor Fan Speeds (using external sensors command)
+	fanSpeeds, err := GetFanSpeeds()
 	if err != nil {
 		log.Fatalf("Error fetching fan speeds: %v\n", err)
 	}
-	for _, fan := range fans {
-		if fan.Value < minFanSpeed || fan.Value > maxFanSpeed {
-			alertMessage += fmt.Sprintf("Alert: Fan speed is out of safe range: %.2f RPM\n", fan.Value)
-		} else {
-			fmt.Printf("Fan Speed: %.2f RPM (Safe)\n", fan.Value)
-		}
+	// Checking if fan speed data is in range
+	if strings.Contains(fanSpeeds, "fan1") {
+		alertMessage += fmt.Sprintf("Fan speed info:\n%s\n", fanSpeeds)
 	}
 
-	// Monitor CPU Clock Speed
-	clockSpeeds, err := cpu.BaseFrequency()
+	// Monitor CPU Clock Speed (using CPU Info method)
+	clockSpeeds, err := cpu.Info()
 	if err != nil {
 		log.Fatalf("Error fetching CPU clock speed: %v\n", err)
 	}
-	for _, speed := range clockSpeeds {
-		if float64(speed)/1e9 < maxClockSpeed {
-			alertMessage += fmt.Sprintf("Alert: CPU Clock Speed is below 3.20 GHz: %.2f GHz\n", float64(speed)/1e9)
+	for _, cpuInfo := range clockSpeeds {
+		// Assuming the CPU has a frequency field available
+		if cpuInfo.Mhz/1000.0 < maxClockSpeed {
+			alertMessage += fmt.Sprintf("Alert: CPU Clock Speed is below 3.20 GHz: %.2f GHz\n", cpuInfo.Mhz/1000.0)
 		} else {
-			fmt.Printf("CPU Clock Speed: %.2f GHz (Safe)\n", float64(speed)/1e9)
+			fmt.Printf("CPU Clock Speed: %.2f GHz (Safe)\n", cpuInfo.Mhz/1000.0)
 		}
 	}
 
@@ -154,4 +162,58 @@ func main() {
 	if alertMessage != "" {
 		sendEmail(config, "System Alert: Resource Usage Exceeded", alertMessage)
 	}
+}
+
+// GetCPUTemperature uses the 'sensors' command for Linux to fetch CPU temperature
+//func GetCPUTemperature() (float64, error) {
+//	// Run the 'sensors' command
+//	cmd := exec.Command("osx-cpu-temp") //for mac  brew install osx-cpu-temp
+//
+//	//for linux lm-sensors
+//	//for windows wmic
+//	output, err := cmd.Output()
+//	if err != nil {
+//		return 0, fmt.Errorf("Error fetching CPU temperature: %w", err)
+//	}
+//
+//	// Parse the output to find the temperature
+//	for _, line := range strings.Split(string(output), "\n") {
+//		if strings.Contains(line, "Core 0") {
+//			// Example: Core 0:      +45.0°C  (high = +80.0°C, crit = +100.0°C)
+//			parts := strings.Fields(line)
+//			if len(parts) > 1 {
+//				// Convert temperature to float64
+//				var temp float64
+//				_, err := fmt.Sscanf(parts[1], "%f", &temp)
+//				if err == nil {
+//					return temp, nil
+//				}
+//			}
+//		}
+//	}
+//
+//	return 0, fmt.Errorf("could not find CPU temperature")
+//}
+
+// GetCPUTemperature uses the 'osx-cpu-temp' command for macOS to fetch CPU temperature
+func GetCPUTemperature() (float64, error) {
+	// Run the 'osx-cpu-temp' command
+	cmd := exec.Command("osx-cpu-temp")
+	output, err := cmd.Output()
+	if err != nil {
+		return 0, fmt.Errorf("Error fetching CPU temperature: %w", err)
+	}
+
+	// Print the raw output for debugging
+	fmt.Printf("Raw output: %s\n", string(output))
+
+	// Proceed with parsing the output
+	var temp float64
+	_, err = fmt.Sscanf(string(output), "+%f°C", &temp)
+	if err != nil {
+		return 0, fmt.Errorf("Error parsing CPU temperature: %w", err)
+	}
+
+	return temp, nil
+
 }
